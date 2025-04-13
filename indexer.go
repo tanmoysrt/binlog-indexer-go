@@ -68,6 +68,7 @@ type ParquetRow struct {
 	Query string `parquet:"name=query, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN_DICTIONARY"`
 }
 
+//export NewBinlogIndexer
 func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename string, batchSize int) (*BinlogIndexer, error) {
 	if _, err := os.Stat(basePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("base path does not exist: %w", err)
@@ -105,6 +106,11 @@ func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename strin
 	parquet_filepath := filepath.Join(basePath, fmt.Sprintf("queries_%s.parquet", binlogFilename))
 	_ = os.Remove(parquet_filepath)
 
+	// Estimate out row group size
+	pageSize, err := EstimateParquetPageSize(binlogPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate row group size: %w", err)
+	}
 	// Create parquet writer
 	fw, err := local.NewLocalFileWriter(parquet_filepath)
 	if err != nil {
@@ -114,11 +120,6 @@ func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename strin
 	parquetWriter, err := writer.NewParquetWriter(fw, new(ParquetRow), 1)
 	parquetWriter.RowGroupSize = 128 * 1024 * 1024 // 128MB
 
-	// Estimate out row group size
-	pageSize, err := EstimateParquetPageSize(binlogPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to estimate row group size: %w", err)
-	}
 	parquetWriter.PageSize = pageSize
 	parquetWriter.CompressionType = parquet.CompressionCodec_ZSTD
 
@@ -138,7 +139,7 @@ func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename strin
 	}, nil
 }
 
-func (p *BinlogIndexer) Index() error {
+func (p *BinlogIndexer) Start() error {
 	err := p.parser.ParseFile(p.binlogPath, 0, p.onBinlogEvent)
 	if err != nil {
 		return fmt.Errorf("failed to parse binlog: %w", err)
@@ -328,6 +329,7 @@ func (p *BinlogIndexer) Close() {
 	p.isClosed = true
 }
 
+//export RemoveBinlogIndex
 func RemoveBinlogIndex(basePath string, binlogPath string, databaseFilename string) error {
 	binlogFilename := filepath.Base(binlogPath)
 
