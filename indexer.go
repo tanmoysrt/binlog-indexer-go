@@ -186,8 +186,6 @@ func (p *BinlogIndexer) flush() error {
 		return fmt.Errorf("failed to insert queries: %w", err)
 	}
 
-	fmt.Printf("Inserted %d queries\n", len(p.queries))
-
 	// Release memory of batch
 	batch = nil
 
