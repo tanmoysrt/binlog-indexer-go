@@ -41,8 +41,8 @@ type Query struct {
 
 type BinlogIndexer struct {
 	BatchSize   int
-	binlog_name string
-	binlog_path string
+	binlogName string
+	binlogPath string
 
 	// State
 	queries      []Query
@@ -53,8 +53,8 @@ type BinlogIndexer struct {
 	fw         source.ParquetFile
 	pw         *writer.ParquetWriter
 	parser     *replication.BinlogParser
-	sql_parser *sqlparser.Parser
-	is_closed  bool
+	sqlParser *sqlparser.Parser
+	isClosed  bool
 }
 
 type ParquetRow struct {
@@ -98,21 +98,21 @@ func NewBinlogIndexer(base_path string, binlog_path string, database_filename st
 
 	return &BinlogIndexer{
 		BatchSize:    10000,
-		binlog_name:  filepath.Base(binlog_path),
-		binlog_path:  binlog_path,
+		binlogName:  filepath.Base(binlog_path),
+		binlogPath:  binlog_path,
 		queries:      make([]Query, 0),
 		currentRowId: 1,
 		db:           db,
 		fw:           fw,
 		pw:           parquetWriter,
 		parser:       replication.NewBinlogParser(),
-		sql_parser:   sql_parser,
-		is_closed:    false,
+		sqlParser:   sql_parser,
+		isClosed:    false,
 	}, nil
 }
 
 func (p *BinlogIndexer) Parse() error {
-	err := p.parser.ParseFile(p.binlog_path, 0, p.onBinlogEvent)
+	err := p.parser.ParseFile(p.binlogPath, 0, p.onBinlogEvent)
 	if err != nil {
 		return fmt.Errorf("failed to parse binlog: %w", err)
 	}
@@ -138,7 +138,7 @@ func (p *BinlogIndexer) onBinlogEvent(e *replication.BinlogEvent) error {
 }
 
 func (p *BinlogIndexer) addQuery(query string, schema string, timestamp uint32, eventSize uint32) {
-	metadata := ExtractSQLMetadata(query, p.sql_parser, string(schema))
+	metadata := ExtractSQLMetadata(query, p.sqlParser, string(schema))
 
 	p.queries = append(p.queries, Query{
 		Timestamp: timestamp,
@@ -176,7 +176,7 @@ func (p *BinlogIndexer) flush() error {
 	for _, query := range p.queries {
 		for _, table := range query.Metadata.Tables {
 			batch = append(batch, fmt.Sprintf("('%s', '%s', '%s', %d, '%s', %d, %d)",
-				p.binlog_name, table.Database, table.Table, query.Timestamp, query.Metadata.Type, query.RowId, query.EventSize))
+				p.binlogName, table.Database, table.Table, query.Timestamp, query.Metadata.Type, query.RowId, query.EventSize))
 		}
 	}
 
@@ -212,7 +212,7 @@ func (p *BinlogIndexer) flush() error {
 }
 
 func (p *BinlogIndexer) Close() {
-	if p.is_closed {
+	if p.isClosed {
 		return
 	}
 	// Do a final flush
@@ -233,5 +233,5 @@ func (p *BinlogIndexer) Close() {
 		fmt.Printf("[WARN] failed to close db: %v\n", err)
 	}
 
-	p.is_closed = true
+	p.isClosed = true
 }
