@@ -3,3 +3,9 @@
 *.db
 test*
 *.wal
+
+**/lib/**
+__pycache__
+env
+dist
+*.egg-info

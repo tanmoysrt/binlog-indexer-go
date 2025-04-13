@@ -1,0 +1,27 @@
+[project]
+name = "mariadb_binlog_indexer"
+version = "0.0.4"
+description = "MariaDB Binlog Indexer for Faster Querying"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+  { name = "Tanmoy Sarkar", email = "tanmoy@frappe.io" }
+]
+dependencies = [
+  "duckdb==1.2.2"
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux"
+]
+
+
+
+[tool.setuptools.package-data]
+"mariadb_binlog_indexer" = ["lib/indexer*"]
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
