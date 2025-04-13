@@ -55,6 +55,12 @@ type BinlogIndexer struct {
 	parser    *replication.BinlogParser
 	sqlParser *sqlparser.Parser
 	isClosed  bool
+
+	// AnnotateRowsEvent parsing related
+	annotateRowsEvent          *replication.MariadbAnnotateRowsEvent
+	annotateRowsEventTimestamp uint32
+	tableMapEvents             [][]string // list of [database, table]
+	annotateRowsEventSize      uint32     // actual event + related events (table map + write rows)
 }
 
 type ParquetRow struct {
@@ -111,17 +117,18 @@ func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename strin
 	parquetWriter.CompressionType = parquet.CompressionCodec_ZSTD
 
 	return &BinlogIndexer{
-		BatchSize:    batchSize,
-		binlogName:   binlogFilename,
-		binlogPath:   binlogPath,
-		queries:      make([]Query, 0),
-		currentRowId: 1,
-		db:           db,
-		fw:           fw,
-		pw:           parquetWriter,
-		parser:       replication.NewBinlogParser(),
-		sqlParser:    sql_parser,
-		isClosed:     false,
+		BatchSize:      batchSize,
+		binlogName:     binlogFilename,
+		binlogPath:     binlogPath,
+		queries:        make([]Query, 0),
+		currentRowId:   1,
+		db:             db,
+		fw:             fw,
+		pw:             parquetWriter,
+		parser:         replication.NewBinlogParser(),
+		sqlParser:      sql_parser,
+		isClosed:       false,
+		tableMapEvents: make([][]string, 0),
 	}, nil
 }
 
@@ -130,6 +137,8 @@ func (p *BinlogIndexer) Index() error {
 	if err != nil {
 		return fmt.Errorf("failed to parse binlog: %w", err)
 	}
+	// Check for any pending annotate rows event
+	p.commitAnnotateRowsEvent()
 	// Flush the last batch
 	err = p.flush()
 	if err != nil {
@@ -141,14 +150,73 @@ func (p *BinlogIndexer) Index() error {
 }
 
 func (p *BinlogIndexer) onBinlogEvent(e *replication.BinlogEvent) error {
+	commitAnnotateRowsEvent := false
 	switch e.Header.EventType {
+	case replication.MARIADB_ANNOTATE_ROWS_EVENT:
+		if event, ok := e.Event.(*replication.MariadbAnnotateRowsEvent); ok {
+			p.annotateRowsEvent = event
+			p.annotateRowsEventSize = e.Header.EventSize
+			p.annotateRowsEventTimestamp = e.Header.Timestamp
+		}
+	case replication.TABLE_MAP_EVENT:
+		if event, ok := e.Event.(*replication.TableMapEvent); ok {
+			p.tableMapEvents = append(p.tableMapEvents, []string{string(event.Schema), string(event.Table)})
+			p.annotateRowsEventSize += e.Header.EventSize
+		}
+	case replication.WRITE_ROWS_EVENTv1, replication.UPDATE_ROWS_EVENTv1, replication.DELETE_ROWS_EVENTv1:
+		if _, ok := e.Event.(*replication.RowsEvent); ok {
+			p.annotateRowsEventSize += e.Header.EventSize
+		}
 	case replication.QUERY_EVENT:
 		if event, ok := e.Event.(*replication.QueryEvent); ok {
 			p.addQuery(string(event.Query), string(event.Schema), e.Header.Timestamp, e.Header.EventSize)
 		}
+		commitAnnotateRowsEvent = true
+	default:
+		commitAnnotateRowsEvent = true
+	}
+
+	if commitAnnotateRowsEvent {
+		p.commitAnnotateRowsEvent()
 	}
 
 	return nil
+}
+
+func (p *BinlogIndexer) commitAnnotateRowsEvent() {
+	if p.annotateRowsEvent == nil {
+		return
+	}
+
+	if len(p.tableMapEvents) == 0 {
+		return
+	}
+
+	metadata := ExtractSQLMetadata(string(p.annotateRowsEvent.Query), p.sqlParser, "")
+	metadata.Tables = make([]*SQLTable, 0)
+	for _, table := range p.tableMapEvents {
+		metadata.Tables = append(metadata.Tables, &SQLTable{
+			Database: table[0],
+			Table:    table[1],
+		})
+	}
+
+	p.queries = append(p.queries, Query{
+		Timestamp: p.annotateRowsEventTimestamp,
+		Metadata:  metadata,
+		RowId:     p.currentRowId,
+		EventSize: p.annotateRowsEventSize,
+		SQL:       string(p.annotateRowsEvent.Query),
+	})
+	p.currentRowId += 1
+
+	// reset
+	p.annotateRowsEvent = nil
+	p.annotateRowsEventSize = 0
+	p.annotateRowsEventTimestamp = 0
+	p.tableMapEvents = make([][]string, 0)
+
+	p.flushIfNeeded()
 }
 
 func (p *BinlogIndexer) addQuery(query string, schema string, timestamp uint32, eventSize uint32) {
@@ -162,10 +230,14 @@ func (p *BinlogIndexer) addQuery(query string, schema string, timestamp uint32, 
 		SQL:       query,
 	})
 	p.currentRowId += 1
+	p.flushIfNeeded()
+}
+
+func (p *BinlogIndexer) flushIfNeeded() {
 	if len(p.queries) >= p.BatchSize {
 		err := p.flush()
 		if err != nil {
-			println(err.Error())
+			fmt.Printf("[WARN] failed to flush: %v\n", err)
 		}
 	}
 }

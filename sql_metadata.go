@@ -118,8 +118,6 @@ func ExtractSQLMetadata(sql string, parser *sqlparser.Parser, defaultDatabase st
 				table.Database = defaultDatabase
 			}
 		}
-	} else {
-		fmt.Println("default database is empty")
 	}
 
 	// If result is empty, set default database
