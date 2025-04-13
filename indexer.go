@@ -65,7 +65,7 @@ type BinlogIndexer struct {
 
 type ParquetRow struct {
 	Id    int32  `parquet:"name=id, type=INT32"`
-	Query string `parquet:"name=query, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
+	Query string `parquet:"name=query, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN_DICTIONARY"`
 }
 
 func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename string, batchSize int) (*BinlogIndexer, error) {
@@ -111,9 +111,15 @@ func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename strin
 		return nil, fmt.Errorf("failed to create local file: %w", err)
 	}
 
-	parquetWriter, err := writer.NewParquetWriter(fw, new(ParquetRow), 4)
-	parquetWriter.RowGroupSize = 50000
-	parquetWriter.PageSize = 512 * 1024 // 512KB
+	parquetWriter, err := writer.NewParquetWriter(fw, new(ParquetRow), 1)
+	parquetWriter.RowGroupSize = 128 * 1024 * 1024 // 128MB
+
+	// Estimate out row group size
+	pageSize, err := EstimateParquetPageSize(binlogPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate row group size: %w", err)
+	}
+	parquetWriter.PageSize = pageSize
 	parquetWriter.CompressionType = parquet.CompressionCodec_ZSTD
 
 	return &BinlogIndexer{

@@ -2,3 +2,4 @@
 *.parquet
 *.db
 test*
+*.wal
