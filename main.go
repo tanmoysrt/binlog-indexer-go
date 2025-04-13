@@ -128,19 +128,20 @@
 package main
 
 func main() {
-	parser, err := NewBinlogIndexer(
+	indexer, err := NewBinlogIndexer(
 		"/home/tanmoy/Desktop/binlog-parser-4",
 		"/home/tanmoy/Desktop/binlog-parser-3/mysql-bin.000300",
 		"queries.db",
+		10000,
 	)
 	if err != nil {
 		println(err.Error())
 		return
 	}
 	defer func() {
-		parser.Close()
+		indexer.Close()
 	}()
-	err = parser.Parse()
+	err = indexer.Index()
 	if err != nil {
 		println(err.Error())
 		return

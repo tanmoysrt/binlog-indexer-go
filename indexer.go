@@ -40,7 +40,7 @@ type Query struct {
 }
 
 type BinlogIndexer struct {
-	BatchSize   int
+	BatchSize  int
 	binlogName string
 	binlogPath string
 
@@ -49,10 +49,10 @@ type BinlogIndexer struct {
 	currentRowId int32
 
 	// Internal
-	db         *sql.DB
-	fw         source.ParquetFile
-	pw         *writer.ParquetWriter
-	parser     *replication.BinlogParser
+	db        *sql.DB
+	fw        source.ParquetFile
+	pw        *writer.ParquetWriter
+	parser    *replication.BinlogParser
 	sqlParser *sqlparser.Parser
 	isClosed  bool
 }
@@ -62,11 +62,12 @@ type ParquetRow struct {
 	Query string `parquet:"name=query, type=BYTE_ARRAY, convertedtype=UTF8, encoding=PLAIN"`
 }
 
-func NewBinlogIndexer(base_path string, binlog_path string, database_filename string) (*BinlogIndexer, error) {
-	if _, err := os.Stat(base_path); os.IsNotExist(err) {
+func NewBinlogIndexer(basePath string, binlogPath string, databaseFilename string, batchSize int) (*BinlogIndexer, error) {
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("base path does not exist: %w", err)
 	}
-	db, err := sql.Open("duckdb", filepath.Join(base_path, database_filename))
+	binlogFilename := filepath.Base(binlogPath)
+	db, err := sql.Open("duckdb", filepath.Join(basePath, databaseFilename))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
@@ -83,8 +84,23 @@ func NewBinlogIndexer(base_path string, binlog_path string, database_filename st
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
+	/*
+	 * Delete current binlog data (if exists)
+	 * Because, parquet file doesn't support appending data
+	 * So we need to delete the current binlog data before we start index it again
+	 */
+
+	_, err = db.Exec("DELETE FROM query WHERE binlog = ?", binlogFilename)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("failed to delete binlog data: %w", err)
+	}
+
+	parquet_filepath := filepath.Join(basePath, fmt.Sprintf("queries_%s.parquet", binlogFilename))
+	_ = os.Remove(parquet_filepath)
+
 	// Create parquet writer
-	fw, err := local.NewLocalFileWriter(filepath.Join(base_path, fmt.Sprintf("queries_%s.parquet", filepath.Base(binlog_path))))
+	fw, err := local.NewLocalFileWriter(parquet_filepath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create local file: %w", err)
 	}
@@ -94,24 +110,22 @@ func NewBinlogIndexer(base_path string, binlog_path string, database_filename st
 	parquetWriter.PageSize = 512 * 1024 // 512KB
 	parquetWriter.CompressionType = parquet.CompressionCodec_ZSTD
 
-	// Fetch Metadata
-
 	return &BinlogIndexer{
-		BatchSize:    10000,
-		binlogName:  filepath.Base(binlog_path),
-		binlogPath:  binlog_path,
+		BatchSize:    batchSize,
+		binlogName:   binlogFilename,
+		binlogPath:   binlogPath,
 		queries:      make([]Query, 0),
 		currentRowId: 1,
 		db:           db,
 		fw:           fw,
 		pw:           parquetWriter,
 		parser:       replication.NewBinlogParser(),
-		sqlParser:   sql_parser,
-		isClosed:    false,
+		sqlParser:    sql_parser,
+		isClosed:     false,
 	}, nil
 }
 
-func (p *BinlogIndexer) Parse() error {
+func (p *BinlogIndexer) Index() error {
 	err := p.parser.ParseFile(p.binlogPath, 0, p.onBinlogEvent)
 	if err != nil {
 		return fmt.Errorf("failed to parse binlog: %w", err)
@@ -234,4 +248,28 @@ func (p *BinlogIndexer) Close() {
 	}
 
 	p.isClosed = true
+}
+
+func RemoveBinlogIndex(basePath string, binlogPath string, databaseFilename string) error {
+	binlogFilename := filepath.Base(binlogPath)
+
+	db, err := sql.Open("duckdb", filepath.Join(basePath, databaseFilename))
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+
+	defer func() {
+		_ = db.Close()
+	}()
+
+	// drop binlog
+	_, err = db.Exec("DELETE FROM query WHERE binlog = ?", binlogFilename)
+	if err != nil {
+		return fmt.Errorf("failed to delete binlog data: %w", err)
+	}
+
+	// drop parquet file
+	parquetFilepath := filepath.Join(basePath, fmt.Sprintf("queries_%s.parquet", binlogFilename))
+	_ = os.Remove(parquetFilepath)
+	return nil
 }
